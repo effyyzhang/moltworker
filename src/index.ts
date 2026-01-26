@@ -213,13 +213,18 @@ async function proxyToClawdbot(
   request: Request,
   sandbox: Sandbox
 ): Promise<Response> {
+  const url = new URL(request.url);
+  
   // Check if this is a WebSocket upgrade request
   if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
     console.log('Proxying WebSocket connection to Clawdbot');
+    console.log('WebSocket URL:', request.url);
+    console.log('WebSocket search params:', url.search);
     return sandbox.wsConnect(request, CLAWDBOT_PORT);
   }
   
   // Regular HTTP request
+  console.log('Proxying HTTP request:', url.pathname + url.search);
   return sandbox.containerFetch(request, CLAWDBOT_PORT);
 }
 
