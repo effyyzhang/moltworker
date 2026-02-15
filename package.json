@@ -17,7 +17,8 @@
     "format:check": "oxfmt --check src/",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "pull-knowledge": "node scripts/pull-knowledge.mjs"
   },
   "dependencies": {
     "@cloudflare/puppeteer": "^1.0.5",
@@ -27,6 +28,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3.990.0",
     "@cloudflare/sandbox": "*",
     "@cloudflare/vite-plugin": "^1.0.0",
     "@cloudflare/workers-types": "^4.20250109.0",
