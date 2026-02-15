@@ -137,6 +137,12 @@ else
     echo "Using existing config"
 fi
 
+# After onboard completes, point OpenClaw workspace to our data directory
+# so it discovers skills, IDENTITY.md, and knowledge files
+rm -rf /root/.openclaw/workspace
+ln -sf /root/clawd /root/.openclaw/workspace
+echo "Workspace linked to /root/clawd"
+
 # ============================================================
 # PATCH CONFIG (channels, gateway auth, trusted proxies)
 # ============================================================

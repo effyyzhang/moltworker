@@ -36,8 +36,9 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
     envVars.ANTHROPIC_BASE_URL = env.ANTHROPIC_BASE_URL;
   }
 
-  // Map MOLTBOT_GATEWAY_TOKEN to OPENCLAW_GATEWAY_TOKEN (container expects this name)
-  if (env.MOLTBOT_GATEWAY_TOKEN) envVars.OPENCLAW_GATEWAY_TOKEN = env.MOLTBOT_GATEWAY_TOKEN;
+  // Pass gateway token to the container so the Control UI's cached token matches
+  // the gateway's expected token. CF Access handles external authentication.
+  if (env.MOLTBOT_GATEWAY_TOKEN) envVars.MOLTBOT_GATEWAY_TOKEN = env.MOLTBOT_GATEWAY_TOKEN;
   if (env.DEV_MODE) envVars.OPENCLAW_DEV_MODE = env.DEV_MODE;
   if (env.TELEGRAM_BOT_TOKEN) envVars.TELEGRAM_BOT_TOKEN = env.TELEGRAM_BOT_TOKEN;
   if (env.TELEGRAM_DM_POLICY) envVars.TELEGRAM_DM_POLICY = env.TELEGRAM_DM_POLICY;
@@ -50,10 +51,13 @@ export function buildEnvVars(env: MoltbotEnv): Record<string, string> {
   if (env.CDP_SECRET) envVars.CDP_SECRET = env.CDP_SECRET;
   if (env.WORKER_URL) envVars.WORKER_URL = env.WORKER_URL;
 
-  // R2 persistence credentials (used by rclone in start-openclaw.sh)
-  if (env.R2_ACCESS_KEY_ID) envVars.R2_ACCESS_KEY_ID = env.R2_ACCESS_KEY_ID;
-  if (env.R2_SECRET_ACCESS_KEY) envVars.R2_SECRET_ACCESS_KEY = env.R2_SECRET_ACCESS_KEY;
-  if (env.R2_BUCKET_NAME) envVars.R2_BUCKET_NAME = env.R2_BUCKET_NAME;
+  // MCP integrations (Google Workspace, Notion)
+  if (env.GOOGLE_OAUTH_CLIENT_ID) envVars.GOOGLE_OAUTH_CLIENT_ID = env.GOOGLE_OAUTH_CLIENT_ID;
+  if (env.GOOGLE_OAUTH_CLIENT_SECRET) envVars.GOOGLE_OAUTH_CLIENT_SECRET = env.GOOGLE_OAUTH_CLIENT_SECRET;
+  if (env.GOOGLE_OAUTH_REFRESH_TOKEN) envVars.GOOGLE_OAUTH_REFRESH_TOKEN = env.GOOGLE_OAUTH_REFRESH_TOKEN;
+  if (env.GOOGLE_OAUTH_REFRESH_TOKEN_WORK) envVars.GOOGLE_OAUTH_REFRESH_TOKEN_WORK = env.GOOGLE_OAUTH_REFRESH_TOKEN_WORK;
+  if (env.GOOGLE_OAUTH_REFRESH_TOKEN_PERSONAL) envVars.GOOGLE_OAUTH_REFRESH_TOKEN_PERSONAL = env.GOOGLE_OAUTH_REFRESH_TOKEN_PERSONAL;
+  if (env.NOTION_API_KEY) envVars.NOTION_API_KEY = env.NOTION_API_KEY;
 
   return envVars;
 }

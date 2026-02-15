@@ -4,6 +4,50 @@ import { MOLTBOT_PORT, STARTUP_TIMEOUT_MS } from '../config';
 import { buildEnvVars } from './env';
 import { ensureRcloneConfig } from './r2';
 
+const CONFIG_HASH_FILE = '/tmp/.openclaw-config-hash';
+
+/**
+ * Compute a short fingerprint of the environment variables passed to the gateway.
+ * Used to detect when env vars change and force a gateway restart.
+ */
+async function computeConfigFingerprint(env: MoltbotEnv): Promise<string> {
+  const envVars = buildEnvVars(env);
+  const raw = Object.entries(envVars)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+  const data = new TextEncoder().encode(raw);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, 16);
+}
+
+/**
+ * Read the stored config fingerprint from the container
+ */
+async function readStoredFingerprint(sandbox: Sandbox): Promise<string | null> {
+  try {
+    const proc = await sandbox.startProcess(`cat ${CONFIG_HASH_FILE}`);
+    const logs = await proc.getLogs();
+    return logs.stdout?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write the config fingerprint to the container
+ */
+async function writeFingerprint(sandbox: Sandbox, fingerprint: string): Promise<void> {
+  try {
+    await sandbox.startProcess(`echo "${fingerprint}" > ${CONFIG_HASH_FILE}`);
+  } catch (e) {
+    console.log('Failed to write config fingerprint:', e);
+  }
+}
+
 /**
  * Find an existing OpenClaw gateway process
  *
@@ -58,6 +102,9 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
   // The startup script uses rclone to restore data from R2 on boot.
   await ensureRcloneConfig(sandbox, env);
 
+  // Compute config fingerprint to detect env var changes
+  const currentFingerprint = await computeConfigFingerprint(env);
+
   // Check if gateway is already running or starting
   const existingProcess = await findExistingMoltbotProcess(sandbox);
   if (existingProcess) {
@@ -68,22 +115,46 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       existingProcess.status,
     );
 
-    // Always use full startup timeout - a process can be "running" but not ready yet
-    // (e.g., just started by another concurrent request). Using a shorter timeout
-    // causes race conditions where we kill processes that are still initializing.
-    try {
-      console.log('Waiting for gateway on port', MOLTBOT_PORT, 'timeout:', STARTUP_TIMEOUT_MS);
-      await existingProcess.waitForPort(MOLTBOT_PORT, { mode: 'tcp', timeout: STARTUP_TIMEOUT_MS });
-      console.log('Gateway is reachable');
-      return existingProcess;
-      // eslint-disable-next-line no-unused-vars
-    } catch (_e) {
-      // Timeout waiting for port - process is likely dead or stuck, kill and restart
-      console.log('Existing process not reachable after full timeout, killing and restarting...');
+    // Check if config has changed since the gateway was started.
+    // If no fingerprint is stored, assume config changed (e.g., first deploy with fingerprinting).
+    const storedFingerprint = await readStoredFingerprint(sandbox);
+    if (!storedFingerprint || storedFingerprint !== currentFingerprint) {
+      console.log(
+        'Config fingerprint changed:',
+        storedFingerprint,
+        '->',
+        currentFingerprint,
+        '- restarting gateway',
+      );
       try {
         await existingProcess.kill();
       } catch (killError) {
         console.log('Failed to kill process:', killError);
+      }
+      // Wait for the process to die before starting a new one
+      await new Promise((r) => setTimeout(r, 2000));
+    } else {
+      // Config unchanged, reuse existing process
+      // Always use full startup timeout - a process can be "running" but not ready yet
+      // (e.g., just started by another concurrent request). Using a shorter timeout
+      // causes race conditions where we kill processes that are still initializing.
+      try {
+        console.log('Waiting for gateway on port', MOLTBOT_PORT, 'timeout:', STARTUP_TIMEOUT_MS);
+        await existingProcess.waitForPort(MOLTBOT_PORT, {
+          mode: 'tcp',
+          timeout: STARTUP_TIMEOUT_MS,
+        });
+        console.log('Gateway is reachable');
+        return existingProcess;
+        // eslint-disable-next-line no-unused-vars
+      } catch (_e) {
+        // Timeout waiting for port - process is likely dead or stuck, kill and restart
+        console.log('Existing process not reachable after full timeout, killing and restarting...');
+        try {
+          await existingProcess.kill();
+        } catch (killError) {
+          console.log('Failed to kill process:', killError);
+        }
       }
     }
   }
@@ -130,6 +201,9 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       throw e;
     }
   }
+
+  // Store config fingerprint so we can detect changes on next request
+  await writeFingerprint(sandbox, currentFingerprint);
 
   // Verify gateway is actually responding
   console.log('[Gateway] Verifying gateway health...');

@@ -1,1 +1,5 @@
 knowledge/CLAUDE.md
+# Prevent circular symlink resolution during Docker build
+# (skills/knowledge-base -> ../../knowledge/skill creates a loop)
+# The Dockerfile creates this symlink inside the container instead
+skills/knowledge-base

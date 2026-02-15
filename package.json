@@ -6,7 +6,8 @@
   "description": "Run Moltbot personal AI assistant in a Cloudflare Sandbox",
   "scripts": {
     "build": "vite build",
-    "deploy": "npm run build && wrangler deploy",
+    "predeploy": "cp -rL ../knowledge knowledge",
+    "deploy": "npm run build && wrangler deploy; rm -rf knowledge",
     "dev": "vite dev",
     "start": "wrangler dev",
     "types": "wrangler types",

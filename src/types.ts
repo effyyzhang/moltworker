@@ -42,6 +42,13 @@ export interface MoltbotEnv {
   BROWSER?: Fetcher;
   CDP_SECRET?: string; // Shared secret for CDP endpoint authentication
   WORKER_URL?: string; // Public URL of the worker (for CDP endpoint)
+  // MCP integrations (Google Workspace, Notion)
+  GOOGLE_OAUTH_CLIENT_ID?: string; // Google Cloud OAuth client ID
+  GOOGLE_OAUTH_CLIENT_SECRET?: string; // Google Cloud OAuth client secret
+  GOOGLE_OAUTH_REFRESH_TOKEN?: string; // Google OAuth refresh token — build (effyyzhang@gmail.com)
+  GOOGLE_OAUTH_REFRESH_TOKEN_WORK?: string; // Google OAuth refresh token — work (effy@baserun.ai)
+  GOOGLE_OAUTH_REFRESH_TOKEN_PERSONAL?: string; // Google OAuth refresh token — personal (yifei0730@gmail.com)
+  NOTION_API_KEY?: string; // Notion integration token (from notion.so/my-integrations)
 }
 
 /**

@@ -37,6 +37,9 @@ Thumbs.db
 # Docker build artifacts
 *.tar
 
+# Knowledge base (copied from ../knowledge at deploy time)
+knowledge/
+
 # Veta agent memory
 .veta/
 

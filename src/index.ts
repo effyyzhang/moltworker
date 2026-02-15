@@ -26,7 +26,7 @@ import { getSandbox, Sandbox, type SandboxOptions } from '@cloudflare/sandbox';
 import type { AppEnv, MoltbotEnv } from './types';
 import { MOLTBOT_PORT } from './config';
 import { createAccessMiddleware } from './auth';
-import { ensureMoltbotGateway, findExistingMoltbotProcess } from './gateway';
+import { ensureMoltbotGateway, findExistingMoltbotProcess, syncToR2 } from './gateway';
 import { publicRoutes, api, adminUi, debug, cdp } from './routes';
 import { redactSensitiveParams } from './utils/logging';
 import loadingPageHtml from './assets/loading.html';
@@ -56,10 +56,6 @@ export { Sandbox };
 function validateRequiredEnv(env: MoltbotEnv): string[] {
   const missing: string[] = [];
   const isTestMode = env.DEV_MODE === 'true' || env.E2E_TEST_MODE === 'true';
-
-  if (!env.MOLTBOT_GATEWAY_TOKEN) {
-    missing.push('MOLTBOT_GATEWAY_TOKEN');
-  }
 
   // CF Access vars not required in dev/test mode since auth is skipped
   if (!isTestMode) {
@@ -289,18 +285,8 @@ app.all('*', async (c) => {
       console.log('[WS] URL:', url.pathname + redactedSearch);
     }
 
-    // Inject gateway token into WebSocket request if not already present.
-    // CF Access redirects strip query params, so authenticated users lose ?token=.
-    // Since the user already passed CF Access auth, we inject the token server-side.
-    let wsRequest = request;
-    if (c.env.MOLTBOT_GATEWAY_TOKEN && !url.searchParams.has('token')) {
-      const tokenUrl = new URL(url.toString());
-      tokenUrl.searchParams.set('token', c.env.MOLTBOT_GATEWAY_TOKEN);
-      wsRequest = new Request(tokenUrl.toString(), request);
-    }
-
-    // Get WebSocket connection to the container
-    const containerResponse = await sandbox.wsConnect(wsRequest, MOLTBOT_PORT);
+    // Get WebSocket connection to the container (no token needed - CF Access handles external auth)
+    const containerResponse = await sandbox.wsConnect(request, MOLTBOT_PORT);
     console.log('[WS] wsConnect response status:', containerResponse.status);
 
     // Get the container-side WebSocket
@@ -428,6 +414,7 @@ app.all('*', async (c) => {
     });
   }
 
+  // Proxy HTTP request to container (no token needed - CF Access handles external auth)
   console.log('[HTTP] Proxying:', url.pathname + url.search);
   const httpResponse = await sandbox.containerFetch(request, MOLTBOT_PORT);
   console.log('[HTTP] Response status:', httpResponse.status);
@@ -444,6 +431,41 @@ app.all('*', async (c) => {
   });
 });
 
+/**
+ * Scheduled handler for cron triggers.
+ * Syncs moltbot config/state from container to R2 for persistence.
+ */
+async function scheduled(
+  _event: ScheduledEvent,
+  env: MoltbotEnv,
+  _ctx: ExecutionContext,
+): Promise<void> {
+  const options = buildSandboxOptions(env);
+  const sandbox = getSandbox(env.Sandbox, 'moltbot', options);
+
+  const gatewayProcess = await findExistingMoltbotProcess(sandbox);
+  if (!gatewayProcess) {
+    console.log('[cron] Gateway not running, starting it...');
+    try {
+      await ensureMoltbotGateway(sandbox, env);
+      console.log('[cron] Gateway started successfully');
+    } catch (err) {
+      console.error('[cron] Failed to start gateway:', err);
+    }
+    return;
+  }
+
+  console.log('[cron] Starting backup sync to R2...');
+  const result = await syncToR2(sandbox, env);
+
+  if (result.success) {
+    console.log('[cron] Backup sync completed successfully at', result.lastSync);
+  } else {
+    console.error('[cron] Backup sync failed:', result.error, result.details || '');
+  }
+}
+
 export default {
   fetch: app.fetch,
+  scheduled,
 };
