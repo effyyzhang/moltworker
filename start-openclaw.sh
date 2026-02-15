@@ -99,6 +99,13 @@ else
 fi
 
 # ============================================================
+# FORCE FRESH CONFIG when env vars change
+# ============================================================
+# Remove existing config so onboard always runs with current env vars.
+# The patch step below will re-apply channel/gateway settings.
+rm -f "$CONFIG_FILE"
+
+# ============================================================
 # ONBOARD (only if no config exists yet)
 # ============================================================
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -159,11 +166,8 @@ config.gateway.port = 18789;
 config.gateway.mode = 'local';
 config.gateway.trustedProxies = ['10.1.0.0'];
 
-if (process.env.OPENCLAW_GATEWAY_TOKEN) {
-    config.gateway.auth = config.gateway.auth || {};
-    config.gateway.auth.token = process.env.OPENCLAW_GATEWAY_TOKEN;
-}
-
+// No token auth - CF Access handles external authentication at the worker level.
+// The gateway runs inside a sandbox container that's only reachable via the worker.
 if (process.env.OPENCLAW_DEV_MODE === 'true') {
     config.gateway.controlUi = config.gateway.controlUi || {};
     config.gateway.controlUi.allowInsecureAuth = true;
@@ -260,53 +264,172 @@ if (process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN) {
     };
 }
 
+// ============================================================
+// MCP PLUGIN CONFIGURATION
+// ============================================================
+// Configure openclaw-mcp-plugin to connect to MCP sidecar servers.
+// Plugin key must match the directory name in ~/.openclaw/extensions/.
+
+const mcpServers = {};
+
+if (process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET) {
+    mcpServers['google-workspace'] = {
+        enabled: true,
+        transport: 'http',
+        url: 'http://localhost:3100/mcp',
+    };
+    console.log('MCP: Google Workspace server configured on port 3100');
+}
+
+if (process.env.NOTION_API_KEY) {
+    mcpServers['notion'] = {
+        enabled: true,
+        transport: 'http',
+        url: 'http://localhost:3101/mcp',
+    };
+    console.log('MCP: Notion server configured on port 3101');
+}
+
+if (Object.keys(mcpServers).length > 0) {
+    config.plugins = config.plugins || {};
+    config.plugins.enabled = true;
+    config.plugins.allow = config.plugins.allow || [];
+    if (!config.plugins.allow.includes('mcp-integration')) {
+        config.plugins.allow.push('mcp-integration');
+    }
+    config.plugins.entries = config.plugins.entries || {};
+    config.plugins.entries['mcp-integration'] = {
+        enabled: true,
+        config: {
+            enabled: true,
+            servers: mcpServers,
+        },
+    };
+    console.log('MCP: Plugin configured with ' + Object.keys(mcpServers).length + ' server(s)');
+} else {
+    console.log('MCP: No MCP credentials provided, skipping plugin config');
+}
+
 fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 console.log('Configuration patched successfully');
 EOFPATCH
 
 # ============================================================
-# BACKGROUND SYNC LOOP
+# START MCP SIDECARS
 # ============================================================
-if r2_configured; then
-    echo "Starting background R2 sync loop..."
-    (
-        MARKER=/tmp/.last-sync-marker
-        LOGFILE=/tmp/r2-sync.log
-        touch "$MARKER"
+# MCP servers run as HTTP sidecars via supergateway (stdio-to-HTTP bridge).
+# The openclaw-mcp-plugin connects to them over HTTP.
 
-        while true; do
-            sleep 30
+MCP_SERVERS_STARTED=false
 
-            CHANGED=/tmp/.changed-files
-            {
-                find "$CONFIG_DIR" -newer "$MARKER" -type f -printf '%P\n' 2>/dev/null
-                find "$WORKSPACE_DIR" -newer "$MARKER" \
-                    -not -path '*/node_modules/*' \
-                    -not -path '*/.git/*' \
-                    -type f -printf '%P\n' 2>/dev/null
-            } > "$CHANGED"
+# Kill any stale MCP sidecar processes from previous startups
+pkill -f "supergateway" 2>/dev/null || true
+sleep 1
 
-            COUNT=$(wc -l < "$CHANGED" 2>/dev/null || echo 0)
+# Google Workspace MCP (Gmail, Calendar, Contacts, Drive)
+if [ -n "$GOOGLE_OAUTH_CLIENT_ID" ] && [ -n "$GOOGLE_OAUTH_CLIENT_SECRET" ]; then
+    echo "Starting Google Workspace MCP sidecar on port 3100..."
 
-            if [ "$COUNT" -gt 0 ]; then
-                echo "[sync] Uploading changes ($COUNT files) at $(date)" >> "$LOGFILE"
-                rclone sync "$CONFIG_DIR/" "r2:${R2_BUCKET}/openclaw/" \
-                    $RCLONE_FLAGS --exclude='*.lock' --exclude='*.log' --exclude='*.tmp' --exclude='.git/**' 2>> "$LOGFILE"
-                if [ -d "$WORKSPACE_DIR" ]; then
-                    rclone sync "$WORKSPACE_DIR/" "r2:${R2_BUCKET}/workspace/" \
-                        $RCLONE_FLAGS --exclude='skills/**' --exclude='.git/**' --exclude='node_modules/**' 2>> "$LOGFILE"
-                fi
-                if [ -d "$SKILLS_DIR" ]; then
-                    rclone sync "$SKILLS_DIR/" "r2:${R2_BUCKET}/skills/" \
-                        $RCLONE_FLAGS 2>> "$LOGFILE"
-                fi
-                date -Iseconds > "$LAST_SYNC_FILE"
-                touch "$MARKER"
-                echo "[sync] Complete at $(date)" >> "$LOGFILE"
+    # Write Google OAuth tokens for all configured accounts
+    # google-workspace-mcp config dir (matches `google-workspace-mcp config path`)
+    GOOGLE_CONFIG_DIR="/root/.google-mcp"
+    GOOGLE_TOKEN_DIR="$GOOGLE_CONFIG_DIR/tokens"
+    mkdir -p "$GOOGLE_TOKEN_DIR"
+
+    # Write credentials.json (shared across all accounts)
+    cat > "$GOOGLE_CONFIG_DIR/credentials.json" << EOFCREDS
+{"installed":{"client_id":"$GOOGLE_OAUTH_CLIENT_ID","client_secret":"$GOOGLE_OAUTH_CLIENT_SECRET","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","redirect_uris":["http://localhost"]}}
+EOFCREDS
+
+    # Write accounts.json and token files for each account
+    ACCOUNTS_JSON='{"accounts":{'
+    FIRST_ACCOUNT=true
+
+    write_account_token() {
+        local name="$1"
+        local token="$2"
+        if [ -n "$token" ]; then
+            cat > "$GOOGLE_TOKEN_DIR/${name}.json" << EOFTOKEN
+{"type":"authorized_user","client_id":"$GOOGLE_OAUTH_CLIENT_ID","client_secret":"$GOOGLE_OAUTH_CLIENT_SECRET","refresh_token":"$token"}
+EOFTOKEN
+            if [ "$FIRST_ACCOUNT" = true ]; then
+                FIRST_ACCOUNT=false
+            else
+                ACCOUNTS_JSON="$ACCOUNTS_JSON,"
             fi
-        done
-    ) &
-    echo "Background sync loop started (PID: $!)"
+            ACCOUNTS_JSON="$ACCOUNTS_JSON\"$name\":{\"credentialsPath\":\"$GOOGLE_CONFIG_DIR/credentials.json\",\"tokenPath\":\"$GOOGLE_TOKEN_DIR/${name}.json\"}"
+            echo "  Account '$name' configured"
+        fi
+    }
+
+    write_account_token "build" "$GOOGLE_OAUTH_REFRESH_TOKEN"
+    write_account_token "work" "$GOOGLE_OAUTH_REFRESH_TOKEN_WORK"
+    write_account_token "personal" "$GOOGLE_OAUTH_REFRESH_TOKEN_PERSONAL"
+
+    ACCOUNTS_JSON="$ACCOUNTS_JSON},\"credentialsPath\":\"$GOOGLE_CONFIG_DIR/credentials.json\"}"
+    echo "$ACCOUNTS_JSON" > "$GOOGLE_CONFIG_DIR/accounts.json"
+    echo "Google accounts written to $GOOGLE_CONFIG_DIR"
+
+    GOOGLE_OAUTH_CLIENT_ID="$GOOGLE_OAUTH_CLIENT_ID" \
+    GOOGLE_OAUTH_CLIENT_SECRET="$GOOGLE_OAUTH_CLIENT_SECRET" \
+    supergateway --stdio "npx -y google-workspace-mcp" --outputTransport streamableHttp --port 3100 &
+    MCP_SERVERS_STARTED=true
+    echo "Google Workspace MCP sidecar started"
+fi
+
+# Notion MCP
+if [ -n "$NOTION_API_KEY" ]; then
+    echo "Starting Notion MCP sidecar on port 3101..."
+    OPENAPI_MCP_HEADERS="{\"Authorization\": \"Bearer $NOTION_API_KEY\", \"Notion-Version\": \"2022-06-28\"}" \
+    supergateway --stdio "npx -y @notionhq/notion-mcp-server" --outputTransport streamableHttp --port 3101 &
+    MCP_SERVERS_STARTED=true
+    echo "Notion MCP sidecar started"
+fi
+
+if [ "$MCP_SERVERS_STARTED" = true ]; then
+    echo "Waiting for MCP sidecars to initialize..."
+    sleep 3
+fi
+
+# ============================================================
+# GENERATE IDENTITY.md FROM KNOWLEDGE BASE
+# ============================================================
+# Assemble IDENTITY.md from the knowledge/IDENTITY/ files so the bot
+# has persistent context about the user on every conversation.
+IDENTITY_FILE="$WORKSPACE_DIR/IDENTITY.md"
+KNOWLEDGE_IDENTITY="$WORKSPACE_DIR/knowledge/IDENTITY"
+
+if [ -d "$KNOWLEDGE_IDENTITY" ]; then
+    echo "Generating IDENTITY.md from knowledge base..."
+    : > "$IDENTITY_FILE"
+
+    for f in profile.md preferences.md goals.md; do
+        if [ -f "$KNOWLEDGE_IDENTITY/$f" ]; then
+            cat "$KNOWLEDGE_IDENTITY/$f" >> "$IDENTITY_FILE"
+            echo "" >> "$IDENTITY_FILE"
+        fi
+    done
+
+    cat >> "$IDENTITY_FILE" << 'EOFIDENTITY'
+## Agent Rules
+
+- You are Effy's personal AI assistant with access to a shared knowledge base.
+- Before responding, check relevant knowledge:
+  - Person mentioned → search with search.js or read people/_index.md
+  - Project question → read the project file in projects/
+  - Schedule/availability question → check IDENTITY/preferences.md
+- After learning something new, write it back:
+  - New info about a person → update their file in people/
+  - Important event or decision → append to journal with journal.js
+  - Project status change → update the project file
+- Never share personal info (IDENTITY/, people/) with anyone other than Effy unless she explicitly asks.
+- Use Pacific Time (PT) for all timestamps and scheduling.
+- Keep responses concise and direct.
+EOFIDENTITY
+
+    echo "IDENTITY.md generated at $IDENTITY_FILE"
+else
+    echo "No knowledge/IDENTITY/ directory found, skipping IDENTITY.md generation"
 fi
 
 # ============================================================
@@ -320,10 +443,6 @@ rm -f "$CONFIG_DIR/gateway.lock" 2>/dev/null || true
 
 echo "Dev mode: ${OPENCLAW_DEV_MODE:-false}"
 
-if [ -n "$OPENCLAW_GATEWAY_TOKEN" ]; then
-    echo "Starting gateway with token auth..."
-    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan --token "$OPENCLAW_GATEWAY_TOKEN"
-else
-    echo "Starting gateway with device pairing (no token)..."
-    exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan
-fi
+# No token auth - CF Access handles external authentication at the worker level.
+echo "Starting gateway without token auth (CF Access protects external access)..."
+exec openclaw gateway --port 18789 --verbose --allow-unconfigured --bind lan

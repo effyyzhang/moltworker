@@ -33,9 +33,14 @@ RUN mkdir -p /root/.openclaw \
     && mkdir -p /root/clawd/skills
 
 # Install MCP plugin for OpenClaw (connects to MCP servers over HTTP)
+# Post-clone fixups: the upstream repo is missing the openclaw.extensions
+# field in package.json (required for plugin discovery) and has the manifest
+# in config/ instead of the root. Patch both so OpenClaw can find it.
 RUN cd /root/.openclaw/extensions \
-    && git clone https://github.com/lunarpulse/openclaw-mcp-plugin.git \
-    && cd openclaw-mcp-plugin \
+    && git clone https://github.com/lunarpulse/openclaw-mcp-plugin.git mcp-integration \
+    && cd mcp-integration \
+    && cp config/openclaw.plugin.json openclaw.plugin.json \
+    && node -e "const p=require('./package.json'); p.openclaw={extensions:['./src/index.js']}; require('fs').writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')" \
     && npm install
 
 # Install MCP servers and supergateway (stdio-to-HTTP bridge)
@@ -43,7 +48,7 @@ RUN cd /root/.openclaw/extensions \
 RUN npm install -g supergateway google-workspace-mcp @notionhq/notion-mcp-server
 
 # Copy startup script
-# Build cache bust: 2026-02-15-v32-unified-knowledge-base
+# Build cache bust: 2026-02-15-v38-mcp-plugin-manifest-fix
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
