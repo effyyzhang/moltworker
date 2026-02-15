@@ -28,19 +28,37 @@ RUN npm install -g openclaw@2026.2.3 \
 # Create OpenClaw directories
 # Legacy .clawdbot paths are kept for R2 backup migration
 RUN mkdir -p /root/.openclaw \
+    && mkdir -p /root/.openclaw/extensions \
     && mkdir -p /root/clawd \
     && mkdir -p /root/clawd/skills
 
+# Install MCP plugin for OpenClaw (connects to MCP servers over HTTP)
+RUN cd /root/.openclaw/extensions \
+    && git clone https://github.com/lunarpulse/openclaw-mcp-plugin.git \
+    && cd openclaw-mcp-plugin \
+    && npm install
+
+# Install MCP servers and supergateway (stdio-to-HTTP bridge)
+# supergateway wraps stdio MCP servers as HTTP endpoints for the plugin
+RUN npm install -g supergateway google-workspace-mcp @notionhq/notion-mcp-server
+
 # Copy startup script
-# Build cache bust: 2026-02-11-v30-rclone
+# Build cache bust: 2026-02-15-v32-unified-knowledge-base
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
-# Copy custom skills
+# Copy knowledge base (data + skill scripts, preserving directory structure)
+COPY knowledge/ /root/clawd/knowledge/
+
+# Copy other skills (browser, etc.)
 COPY skills/ /root/clawd/skills/
+
+# Symlink knowledge skill into OpenClaw skills directory
+# This preserves the relative path resolution in scripts
+RUN ln -sf /root/clawd/knowledge/skill /root/clawd/skills/knowledge-base
 
 # Set working directory
 WORKDIR /root/clawd
 
-# Expose the gateway port
-EXPOSE 18789
+# Expose the gateway port and MCP sidecar ports
+EXPOSE 18789 3100 3101
