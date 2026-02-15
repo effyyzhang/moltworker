@@ -378,7 +378,7 @@ EOFTOKEN
 
     GOOGLE_OAUTH_CLIENT_ID="$GOOGLE_OAUTH_CLIENT_ID" \
     GOOGLE_OAUTH_CLIENT_SECRET="$GOOGLE_OAUTH_CLIENT_SECRET" \
-    supergateway --stdio "npx -y google-workspace-mcp" --outputTransport streamableHttp --port 3100 &
+    supergateway --stdio "npx -y google-workspace-mcp serve" --outputTransport streamableHttp --port 3100 &
     MCP_SERVERS_STARTED=true
     echo "Google Workspace MCP sidecar started"
 fi
