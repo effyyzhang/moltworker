@@ -48,7 +48,7 @@ RUN cd /root/.openclaw/extensions \
 RUN npm install -g supergateway google-workspace-mcp @notionhq/notion-mcp-server
 
 # Copy startup script
-# Build cache bust: 2026-02-15-v38-mcp-plugin-manifest-fix
+# Build cache bust: 2026-02-15-v39-workspace-symlink
 COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
 RUN chmod +x /usr/local/bin/start-openclaw.sh
 
@@ -58,9 +58,11 @@ COPY knowledge/ /root/clawd/knowledge/
 # Copy other skills (browser, etc.)
 COPY skills/ /root/clawd/skills/
 
-# Symlink knowledge skill into OpenClaw skills directory
-# This preserves the relative path resolution in scripts
-RUN ln -sf /root/clawd/knowledge/skill /root/clawd/skills/knowledge-base
+# Auto-discover skills from knowledge/skills/
+RUN for d in /root/clawd/knowledge/skills/*/; do \
+  name=$(basename "$d"); \
+  [ ! -e "/root/clawd/skills/$name" ] && ln -sf "$d" "/root/clawd/skills/$name"; \
+done
 
 # Set working directory
 WORKDIR /root/clawd

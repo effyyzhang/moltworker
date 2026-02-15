@@ -137,6 +137,7 @@ Browser
 |------|---------|
 | `src/index.ts` | Worker that manages sandbox lifecycle and proxies requests |
 | `Dockerfile` | Container image based on `cloudflare/sandbox` with Node 22 + OpenClaw |
+| `knowledge/skills/` | Skill registry — auto-discovered by Dockerfile glob into `/root/clawd/skills/` |
 | `start-openclaw.sh` | Startup script: R2 restore → onboard → config patch → launch gateway |
 | `wrangler.jsonc` | Cloudflare Worker + Container configuration |
 
@@ -162,6 +163,12 @@ DEBUG_ROUTES=true       # Enables /debug/* routes
 ### WebSocket Limitations
 
 Local development with `wrangler dev` has issues proxying WebSocket connections through the sandbox. HTTP requests work but WebSocket connections may fail. Deploy to Cloudflare for full functionality.
+
+## Skills Auto-Discovery
+
+Skills in `open_claw/skills/` are copied directly into the container. Skills in `knowledge/skills/` are auto-discovered by a Dockerfile glob and symlinked in. To add a new skill: create a directory in `knowledge/skills/{name}/` with a `SKILL.md` — no Dockerfile changes needed.
+
+The `[ ! -e ... ]` guard prevents knowledge skills from overwriting skills already in `open_claw/skills/` (like `cloudflare-browser`).
 
 ## Docker Image Caching
 
